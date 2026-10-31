@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Маленький exe (~2-5 МБ): нужен установленный .NET 8 Desktop Runtime
+      - name: Publish (framework-dependent, small)
+        run: >
+          dotnet publish WinWidgets.csproj -c Release -r win-x64
+          --self-contained false
+          -p:PublishSingleFile=true
+          -o out/small
+
+      # Автономный exe: запускается без установки .NET, но весит больше
+      - name: Publish (self-contained)
+        run: >
+          dotnet publish WinWidgets.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o out/standalone
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinWidgets-small
+          path: out/small/WinWidgets.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinWidgets-standalone
+          path: out/standalone/WinWidgets.exe
