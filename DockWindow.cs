@@ -26,21 +26,22 @@ namespace WinWidgets
         public Ellipse Dot;
         public TranslateTransform Bounce = new TranslateTransform();
         public double Scale = 1, Target = 1, BaseX;
+        public bool Special;
     }
 
     /// <summary>Плавающий док: увеличение под курсором, точки у запущенных, закрепление через ПКМ.</summary>
     public class DockWindow : Window
     {
-        const double Gap = 8, PadX = 14, PadY = 10, SepW = 13, TipH = 44;
+        const double Gap = 6, PadX = 10, PadY = 8, SepW = 15, TipH = 44;
+        const string TrashParse = "::{645FF040-5081-101B-9F08-00AA002F954E}";
 
         readonly Grid _root = new Grid();
-        readonly GlassPanel _glass = new GlassPanel(26) { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom };
+        readonly GlassPanel _glass = new GlassPanel(24) { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom };
         readonly StackPanel _row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom };
         readonly Border _tip = new Border
         {
-            CornerRadius = new CornerRadius(9), Padding = new Thickness(11, 5, 11, 6), IsHitTestVisible = false,
-            Background = Theme.Solid(Color.FromArgb(225, 24, 26, 36)),
-            BorderBrush = Theme.Solid(Color.FromArgb(46, 255, 255, 255)), BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7), Padding = new Thickness(11, 4, 11, 5), IsHitTestVisible = false,
+            Background = Theme.Solid(Color.FromArgb(214, 38, 38, 42)),
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Opacity = 0,
         };
         readonly TextBlock _tipText = new TextBlock { Foreground = Brushes.White, FontSize = 12.5, FontWeight = FontWeights.Medium };
@@ -80,7 +81,13 @@ namespace WinWidgets
             _poll.Tick += (s, e) => PollRunning();
             _poll.Start();
 
-            ConfigStore.Changed += () => { _sig = ""; Rebuild(); };
+            _cfgSig = CfgSig();
+            ConfigStore.Changed += () =>
+            {
+                string s = CfgSig();
+                if (s == _cfgSig) return;          // двигают ползунок часов — док не трогаем
+                _cfgSig = s; _sig = ""; Rebuild();
+            };
             Rebuild();
         }
 
@@ -104,8 +111,9 @@ namespace WinWidgets
             _items.Clear();
             foreach (var a in c.Apps)
             {
-                if (string.IsNullOrWhiteSpace(a.Path) || !File.Exists(a.Path)) continue;
-                _items.Add(new DockItem { Path = a.Path, Name = string.IsNullOrWhiteSpace(a.Name) ? System.IO.Path.GetFileNameWithoutExtension(a.Path) : a.Name, Pinned = true });
+                string ap = Exp(a.Path);
+                if (string.IsNullOrWhiteSpace(ap) || !File.Exists(ap)) continue;
+                _items.Add(new DockItem { Path = ap, Name = string.IsNullOrWhiteSpace(a.Name) ? System.IO.Path.GetFileNameWithoutExtension(ap) : a.Name, Pinned = true });
             }
             if (c.ShowRunning)
             {
@@ -119,22 +127,26 @@ namespace WinWidgets
                 }
             }
             AssignWindows(running);
+            if (c.ShowTrash && GetIcon(TrashParse) != null)
+                _items.Add(new DockItem { Path = TrashParse, Name = "Корзина", Pinned = false, Special = true });
 
             _row.Children.Clear();
-            bool sepDone = false;
+            int lastGroup = -1;
             double x = 0;
             foreach (var it in _items)
             {
-                if (!it.Pinned && !sepDone && _items.Any(i => i.Pinned))
+                int group = it.Special ? 2 : (it.Pinned ? 0 : 1);
+                if (lastGroup >= 0 && group != lastGroup)
                 {
                     _row.Children.Add(new Border
                     {
                         Width = 1, Height = _size * 0.8, Margin = new Thickness(SepW / 2 - 0.5, 0, SepW / 2 - 0.5, 4),
                         VerticalAlignment = VerticalAlignment.Bottom,
-                        Background = Theme.Solid(Color.FromArgb(60, 255, 255, 255)),
+                        Background = Theme.Solid(Theme.A(Ui.Fg, 0.25)),
                     });
-                    x += SepW; sepDone = true;
+                    x += SepW;
                 }
+                lastGroup = group;
                 it.BaseX = x + _size / 2;
                 x += _size + Gap;
                 it.Scale = it.Target = 1;
@@ -149,10 +161,10 @@ namespace WinWidgets
                 RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
                 var dot = new Ellipse
                 {
-                    Width = 4, Height = 4, Fill = Theme.Solid(Color.FromArgb(220, 255, 255, 255)),
+                    Width = 4, Height = 4, Fill = Theme.Solid(Theme.A(Ui.Fg, 0.75)),
                     HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom,
                     Margin = new Thickness(0, 0, 0, -8), IsHitTestVisible = false,
-                    Visibility = it.Windows.Count > 0 ? Visibility.Visible : Visibility.Collapsed,
+                    Visibility = (!it.Special && it.Windows.Count > 0) ? Visibility.Visible : Visibility.Collapsed,
                 };
                 var cell = new Grid { Width = _size, Height = _size, Margin = new Thickness(0, 0, Gap, 0), Background = Brushes.Transparent, Cursor = Cursors.Hand };
                 cell.Children.Add(img); cell.Children.Add(dot);
@@ -168,6 +180,19 @@ namespace WinWidgets
         }
 
         double _baseTotal;
+        string _cfgSig = "";
+
+        static string CfgSig()
+        {
+            try { return System.Text.Json.JsonSerializer.Serialize(ConfigStore.Current.Dock) + ConfigStore.Current.Glass.Light; }
+            catch { return ""; }
+        }
+
+        static string Exp(string path)
+        {
+            try { return Environment.ExpandEnvironmentVariables(path ?? ""); }
+            catch { return path ?? ""; }
+        }
 
         void LayoutWindow(DockCfg c)
         {
@@ -193,7 +218,7 @@ namespace WinWidgets
 
         string Signature()
         {
-            return string.Join("|", _items.Select(i => i.Path + (i.Windows.Count > 0 ? "*" : "")));
+            return string.Join("|", _items.Where(i => !i.Special).Select(i => i.Path + (i.Windows.Count > 0 ? "*" : "")));
         }
 
         // ---------- запущенные приложения ----------
@@ -217,8 +242,8 @@ namespace WinWidgets
                 var saved = _items.ToList();
                 var tmp = new List<DockItem>();
                 foreach (var a in c.Apps)
-                    if (!string.IsNullOrWhiteSpace(a.Path) && File.Exists(a.Path))
-                        tmp.Add(new DockItem { Path = a.Path, Pinned = true });
+                    if (!string.IsNullOrWhiteSpace(Exp(a.Path)) && File.Exists(Exp(a.Path)))
+                        tmp.Add(new DockItem { Path = Exp(a.Path), Pinned = true });
                 if (c.ShowRunning)
                     foreach (var w in list)
                     {
@@ -271,7 +296,8 @@ namespace WinWidgets
         {
             try
             {
-                Process.Start(new ProcessStartInfo(it.Path) { UseShellExecute = true });
+                if (it.Special) Process.Start(new ProcessStartInfo("explorer.exe", "shell:RecycleBinFolder") { UseShellExecute = true });
+                else Process.Start(new ProcessStartInfo(it.Path) { UseShellExecute = true });
                 var a = new DoubleAnimation(0, -_size * 0.45, TimeSpan.FromMilliseconds(260))
                 {
                     AutoReverse = true, RepeatBehavior = new RepeatBehavior(3),
@@ -292,6 +318,7 @@ namespace WinWidgets
             var open = new MenuItem { Header = it.Windows.Count > 0 ? "Запустить ещё одно окно" : "Открыть" };
             open.Click += (s, e) => Launch(it);
             m.Items.Add(open);
+            if (it.Special) { m.IsOpen = true; return; }
 
             var pin = new MenuItem { Header = it.Pinned ? "Открепить от дока" : "Закрепить в доке" };
             pin.Click += (s, e) => TogglePin(it);
@@ -303,7 +330,7 @@ namespace WinWidgets
         void TogglePin(DockItem it)
         {
             var apps = ConfigStore.Current.Dock.Apps;
-            if (it.Pinned) apps.RemoveAll(a => string.Equals(a.Path, it.Path, StringComparison.OrdinalIgnoreCase));
+            if (it.Pinned) apps.RemoveAll(a => string.Equals(Exp(a.Path), it.Path, StringComparison.OrdinalIgnoreCase));
             else apps.Add(new AppEntry { Name = it.Name, Path = it.Path });
             ConfigStore.Save();
             _sig = "";

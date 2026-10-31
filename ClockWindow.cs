@@ -101,6 +101,19 @@ namespace WinWidgets
 
         void Refresh(bool force)
         {
+            try { RefreshCore(force); }
+            catch (Exception ex)
+            {
+                Log.Write("CLOCK", ex);
+                // плохой шрифт или значение: откатываемся к безопасному, чтобы не падать каждую секунду
+                var k = ConfigStore.Current.Clock;
+                k.Font = "Segoe UI"; k.Weight = 300;
+                try { RefreshCore(true); } catch { }
+            }
+        }
+
+        void RefreshCore(bool force)
+        {
             var c = ConfigStore.Current.Clock;
             if (!c.Enabled) { Hide(); return; }
             if (!IsVisible) Show();

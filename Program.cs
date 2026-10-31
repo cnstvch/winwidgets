@@ -20,10 +20,38 @@ namespace WinWidgets
             {
                 if (!created) return;
                 var app = new System.Windows.Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                app.DispatcherUnhandledException += (s, e) => { e.Handled = true; };   // виджет не должен падать из-за мелочи
-                AppActions.Start(app);
+                app.DispatcherUnhandledException += (s, e) => { Log.Write("UI", e.Exception); e.Handled = true; };
+                AppDomain.CurrentDomain.UnhandledException += (s, e) => Log.Write("FATAL", e.ExceptionObject as Exception);
+                try
+                {
+                    AppActions.Start(app);
+                }
+                catch (Exception ex)
+                {
+                    Log.Write("START", ex);
+                    System.Windows.MessageBox.Show(
+                        "WinWidgets не смог запуститься.\n\n" + ex.Message + "\n\nПодробности: " + Log.FilePath,
+                        "WinWidgets", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
                 app.Run();
             }
+        }
+    }
+
+    public static class Log
+    {
+        public static readonly string FilePath = System.IO.Path.Combine(ConfigStore.Dir, "crash.log");
+
+        public static void Write(string kind, Exception ex)
+        {
+            try
+            {
+                System.IO.Directory.CreateDirectory(ConfigStore.Dir);
+                System.IO.File.AppendAllText(FilePath,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [" + kind + "] " + (ex == null ? "?" : ex.ToString()) + "\r\n\r\n");
+            }
+            catch { }
         }
     }
 
@@ -37,6 +65,8 @@ namespace WinWidgets
         static ClockWindow _clock;
         static DockWindow _dock;
         static ControlCenterWindow _cc;
+        static AnalogClockWindow _analog;
+        static CalendarWindow _calendar;
         static SettingsWindow _settings;
         static System.Windows.Forms.NotifyIcon _tray;
         static System.Windows.Forms.ToolStripMenuItem _autoStartItem;
@@ -48,16 +78,29 @@ namespace WinWidgets
         public static void Start(System.Windows.Application app)
         {
             _app = app;
+
+            // Безопасный режим: если прошлый запуск умер, не дойдя до конца старта, сбрасываем конфиг.
+            string flag = System.IO.Path.Combine(ConfigStore.Dir, ".starting");
+            bool crashedLastTime = System.IO.File.Exists(flag);
+            try { System.IO.Directory.CreateDirectory(ConfigStore.Dir); System.IO.File.WriteAllText(flag, "1"); } catch { }
+
             ConfigStore.Init();
+            if (crashedLastTime) ConfigStore.ResetToDefaults();
             Wallpaper.Reload();
             MediaService.Init();
 
-            _island = new IslandWindow();
-            _clock = new ClockWindow();
-            _dock = new DockWindow();
-            _cc = new ControlCenterWindow();
+            _island = Safe(() => new IslandWindow());
+            _clock = Safe(() => new ClockWindow());
+            _dock = Safe(() => new DockWindow());
+            _cc = Safe(() => new ControlCenterWindow());
+            _analog = Safe(() => new AnalogClockWindow());
+            _calendar = Safe(() => new CalendarWindow());
 
-            if (ConfigStore.Current.Island.Enabled) _island.Show();
+            if (_island != null && ConfigStore.Current.Island.Enabled) _island.Show();
+
+            var ok = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+            ok.Tick += (s, e) => { ok.Stop(); try { System.IO.File.Delete(flag); } catch { } };
+            ok.Start();
 
             BuildTray();
             RegisterHotkey();
@@ -81,13 +124,13 @@ namespace WinWidgets
                 if (fs != _suppressed)
                 {
                     _suppressed = fs;
-                    _island.SetSuppressed(fs || !ConfigStore.Current.Island.Enabled);
-                    _dock.SetSuppressed(fs || !ConfigStore.Current.Dock.Enabled);
+                    _island?.SetSuppressed(fs || !ConfigStore.Current.Island.Enabled);
+                    _dock?.SetSuppressed(fs || !ConfigStore.Current.Dock.Enabled);
                 }
                 if (!fs)
                 {
-                    if (_island.IsVisible) Native.KeepTopmost(_island);
-                    if (_dock.IsVisible) Native.KeepTopmost(_dock);
+                    if (_island != null && _island.IsVisible) Native.KeepTopmost(_island);
+                    if (_dock != null && _dock.IsVisible) Native.KeepTopmost(_dock);
                 }
             };
             _watch.Start();
@@ -98,12 +141,21 @@ namespace WinWidgets
             gc.Start();
         }
 
+        static T Safe<T>(Func<T> make) where T : class
+        {
+            try { return make(); }
+            catch (Exception ex) { Log.Write("CREATE " + typeof(T).Name, ex); return null; }
+        }
+
         static void OnConfigChanged()
         {
             var c = ConfigStore.Current;
 
-            if (c.Island.Enabled) { if (!_suppressed) _island.SetSuppressed(false); if (!_island.IsVisible) _island.Show(); }
-            else _island.SetSuppressed(true);
+            if (_island != null)
+            {
+                if (c.Island.Enabled) { if (!_suppressed) _island.SetSuppressed(false); if (!_island.IsVisible) _island.Show(); }
+                else _island.SetSuppressed(true);
+            }
 
             bool wantHide = c.Dock.Enabled && c.Dock.HideWindowsTaskbar;
             if (wantHide != _taskbarHidden)
@@ -114,7 +166,7 @@ namespace WinWidgets
         }
 
         // ---------- действия ----------
-        public static void ToggleControlCenter() { _cc.Toggle(); }
+        public static void ToggleControlCenter() { _cc?.Toggle(); }
 
         public static void OpenSettings()
         {

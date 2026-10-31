@@ -2,7 +2,6 @@ using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
@@ -10,45 +9,51 @@ using System.Windows.Threading;
 
 namespace WinWidgets
 {
-    /// <summary>«Челка» сверху по центру: время → мини-плеер → развёрнутый плеер.</summary>
+    /// <summary>
+    /// Челка сверху по центру. Вся форма — один чёрный Path (без швов у «плечиков»),
+    /// размеры двигаются пружиной. Простой → мини-плеер → развёрнутый плеер.
+    /// </summary>
     public class IslandWindow : Window
     {
         enum Mode { Idle, Compact, Expanded }
 
-        const double Flare = 22;                       // вогнутые «плечики» у края экрана
+        const double Ear = 14;          // вогнутые «плечики» у верхнего края
+        const double BottomR = 22;      // скругление нижних углов
         const string IcoPrev = "M6,5 L8,5 L8,19 L6,19 Z M20,5 L20,19 L9,12 Z";
         const string IcoNext = "M16,5 L18,5 L18,19 L16,19 Z M4,5 L4,19 L15,12 Z";
         const string IcoPlay = "M7,4 L20,12 L7,20 Z";
         const string IcoPause = "M6,4 L10,4 L10,20 L6,20 Z M14,4 L18,4 L18,20 L14,20 Z";
 
-        readonly Grid _shell = new Grid { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
-        readonly Border _body = new Border { Background = Brushes.Black };
-        readonly Border _glow = new Border { IsHitTestVisible = false };
+        readonly Grid _root = new Grid();
+        readonly Path _shape = new Path { Fill = Brushes.Black, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
+        readonly Grid _content = new Grid { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, ClipToBounds = true };
         readonly Grid _idleView = new Grid();
-        readonly Grid _compactView = new Grid { Opacity = 0, IsHitTestVisible = false };
-        readonly Grid _fullView = new Grid { Opacity = 0, IsHitTestVisible = false };
+        readonly Grid _compactView = new Grid { Opacity = 0, IsHitTestVisible = false, Width = 250, Height = 34, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
+        readonly Grid _fullView = new Grid { Opacity = 0, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top };
 
         readonly TextBlock _idleText = new TextBlock();
-        readonly Border _artC = new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(7) };
-        readonly Border _artF = new Border { Width = 54, Height = 54, CornerRadius = new CornerRadius(13) };
+        readonly Border _artC = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(6) };
+        readonly Border _artF = new Border { Width = 52, Height = 52, CornerRadius = new CornerRadius(11) };
         readonly TextBlock _title = new TextBlock();
         readonly TextBlock _artist = new TextBlock();
+        readonly TextBlock _tLeft = new TextBlock();
+        readonly TextBlock _tRight = new TextBlock();
         readonly Border[] _barsC = new Border[4];
         readonly Border[] _barsF = new Border[5];
-        readonly Border _playBtn = new Border { Width = 38, Height = 38, CornerRadius = new CornerRadius(19), Background = Brushes.White };
         readonly Path _playIcon = new Path();
-        readonly Border _track = new Border { Height = 3, CornerRadius = new CornerRadius(1.5), Background = Theme.Solid(Color.FromArgb(40, 255, 255, 255)) };
-        readonly Border _fill = new Border { Height = 3, CornerRadius = new CornerRadius(1.5), HorizontalAlignment = HorizontalAlignment.Left, Background = Brushes.White };
+        readonly Border _track = new Border { Height = 4, CornerRadius = new CornerRadius(2), Background = Theme.Solid(Color.FromArgb(70, 255, 255, 255)) };
+        readonly Border _fill = new Border { Height = 4, CornerRadius = new CornerRadius(2), HorizontalAlignment = HorizontalAlignment.Left, Background = Brushes.White };
 
+        readonly SpringGroup _springs;
+        readonly Spring _w, _h;
         readonly DispatcherTimer _clockTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
         readonly DispatcherTimer _progTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         readonly DispatcherTimer _evalTimer = new DispatcherTimer();
 
         Mode _mode = Mode.Idle;
-        bool _hover;
+        bool _hover, _barsRunning, _modeSet;
         DateTime _expandUntil = DateTime.MinValue;
         string _lastTrack = "";
-        bool _barsRunning;
 
         public IslandWindow()
         {
@@ -60,10 +65,14 @@ namespace WinWidgets
             Topmost = true;
             ResizeMode = ResizeMode.NoResize;
             Focusable = false;
-            UseLayoutRounding = true;
             TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
 
+            _springs = new SpringGroup(Layout);
+            _w = _springs.Add(168, 300, 22);
+            _h = _springs.Add(32, 300, 22);
+
             BuildUi();
+            Content = _root;
             ApplyMediaVisuals();
             ApplyConfig();
 
@@ -76,25 +85,27 @@ namespace WinWidgets
             _progTimer.Tick += (s, e) => UpdateProgress();
             _evalTimer.Tick += (s, e) => { _evalTimer.Stop(); Evaluate(); };
 
-            _body.MouseEnter += (s, e) => { _hover = true; Evaluate(); };
-            _body.MouseLeave += (s, e) =>
+            MouseEnter += (s, e) => { _hover = true; _evalTimer.Stop(); Evaluate(); };
+            MouseLeave += (s, e) =>
             {
                 _hover = false;
-                _evalTimer.Stop(); _evalTimer.Interval = TimeSpan.FromMilliseconds(450); _evalTimer.Start();
+                _evalTimer.Stop(); _evalTimer.Interval = TimeSpan.FromMilliseconds(380); _evalTimer.Start();
             };
 
             UpdateClock();
             Evaluate(true);
         }
 
-        // ---------- конфиг / позиция ----------
+        // ---------- конфиг ----------
         void ApplyConfig()
         {
             var c = ConfigStore.Current.Island;
-            Width = c.Width + 2 * Flare;
-            Height = c.Height + 8;
+            Width = c.Width + 2 * Ear + 60;
+            Height = c.Height + 40;
             Left = (SystemParameters.PrimaryScreenWidth - Width) / 2;
             Top = 0;
+            _fullView.Width = c.Width; _fullView.Height = c.Height;
+            _idleText.Visibility = c.IdleClock ? Visibility.Visible : Visibility.Collapsed;
             Evaluate(true);
         }
 
@@ -103,126 +114,125 @@ namespace WinWidgets
             Visibility = hide ? Visibility.Hidden : Visibility.Visible;
         }
 
+        // ---------- форма ----------
+        static Geometry Build(double w, double h)
+        {
+            double e = Ear;
+            double r = Math.Max(1, Math.Min(BottomR, Math.Min(h / 2, w / 2)));
+            double W = w + 2 * e;
+            var g = new StreamGeometry();
+            using (var c = g.Open())
+            {
+                c.BeginFigure(new Point(0, 0), true, true);
+                c.LineTo(new Point(W, 0), true, false);
+                c.ArcTo(new Point(W - e, e), new Size(e, e), 0, false, SweepDirection.Counterclockwise, true, false);
+                c.LineTo(new Point(W - e, h - r), true, false);
+                c.ArcTo(new Point(W - e - r, h), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                c.LineTo(new Point(e + r, h), true, false);
+                c.ArcTo(new Point(e, h - r), new Size(r, r), 0, false, SweepDirection.Clockwise, true, false);
+                c.LineTo(new Point(e, e), true, false);
+                c.ArcTo(new Point(0, 0), new Size(e, e), 0, false, SweepDirection.Counterclockwise, true, false);
+            }
+            g.Freeze();
+            return g;
+        }
+
+        void Layout()
+        {
+            double w = Math.Max(60, _w.Value), h = Math.Max(24, _h.Value);
+            _shape.Width = w + 2 * Ear; _shape.Height = h;
+            _shape.Data = Build(w, h);
+            _content.Width = w; _content.Height = h;
+            _content.Clip = new RectangleGeometry(new Rect(0, 0, w, h), Math.Min(BottomR, h / 2), Math.Min(BottomR, h / 2));
+        }
+
         // ---------- UI ----------
         void BuildUi()
         {
+            _root.Children.Add(_shape);
+            _root.Children.Add(_content);
+            _content.Children.Add(_idleView);
+            _content.Children.Add(_compactView);
+            _content.Children.Add(_fullView);
+
             var white = Brushes.White;
             var dim = Theme.Solid(Color.FromArgb(150, 255, 255, 255));
 
-            // плечики
-            var left = new Path
-            {
-                Data = Geometry.Parse("M0,0 L22,0 L22,22 A22,22 0 0 0 0,0 Z"),
-                Fill = Brushes.Black, Width = Flare, Height = Flare,
-                HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
-                IsHitTestVisible = false,
-            };
-            var right = new Path
-            {
-                Data = Geometry.Parse("M22,0 L0,0 L0,22 A22,22 0 0 1 22,0 Z"),
-                Fill = Brushes.Black, Width = Flare, Height = Flare,
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
-                IsHitTestVisible = false,
-            };
-            _body.Margin = new Thickness(Flare, 0, Flare, 0);
-            _body.CornerRadius = new CornerRadius(0, 0, 17, 17);
-            _body.SizeChanged += (s, e) =>
-            {
-                double r = Math.Min(34, _body.ActualHeight / 2);
-                _body.CornerRadius = new CornerRadius(0, 0, r, r);
-                _glow.CornerRadius = _body.CornerRadius;
-            };
-
-            _shell.Children.Add(_body);
-            _shell.Children.Add(left);
-            _shell.Children.Add(right);
-
-            var inner = new Grid();
-            _body.Child = inner;
-            inner.Children.Add(_glow);
-            inner.Children.Add(_idleView);
-            inner.Children.Add(_compactView);
-            inner.Children.Add(_fullView);
-
-            // --- idle: время ---
+            // idle
             _idleText.Foreground = Theme.Solid(Color.FromArgb(190, 255, 255, 255));
-            _idleText.FontFamily = Theme.UiFont;
-            _idleText.FontSize = 13; _idleText.FontWeight = FontWeights.SemiBold;
+            _idleText.FontFamily = Theme.UiFont; _idleText.FontSize = 13; _idleText.FontWeight = FontWeights.SemiBold;
             _idleText.HorizontalAlignment = HorizontalAlignment.Center;
             _idleText.VerticalAlignment = VerticalAlignment.Center;
             _idleView.Children.Add(_idleText);
 
-            // --- compact: мини-обложка + эквалайзер ---
-            _compactView.Margin = new Thickness(12, 0, 16, 0);
-            _artC.HorizontalAlignment = HorizontalAlignment.Left;
-            _artC.VerticalAlignment = VerticalAlignment.Center;
+            // compact: обложка слева, эквалайзер справа
+            _artC.HorizontalAlignment = HorizontalAlignment.Left; _artC.VerticalAlignment = VerticalAlignment.Center;
+            _artC.Margin = new Thickness(Ear, 0, 0, 0);
             var eqC = MakeBars(_barsC, 14);
-            eqC.HorizontalAlignment = HorizontalAlignment.Right;
-            eqC.VerticalAlignment = VerticalAlignment.Center;
-            _compactView.Children.Add(_artC);
-            _compactView.Children.Add(eqC);
+            eqC.HorizontalAlignment = HorizontalAlignment.Right; eqC.VerticalAlignment = VerticalAlignment.Center;
+            eqC.Margin = new Thickness(0, 0, Ear + 4, 0);
+            _compactView.Children.Add(_artC); _compactView.Children.Add(eqC);
 
-            // --- expanded ---
-            _fullView.Margin = new Thickness(16, 0, 22, 12);
-            var row = new Grid();
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.VerticalAlignment = VerticalAlignment.Center;
+            // expanded
+            var col = new Grid { Margin = new Thickness(22, 12, 22, 10) };
+            col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            col.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            col.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-            Grid.SetColumn(_artF, 0);
+            var top = new Grid();
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             _artF.Margin = new Thickness(0, 0, 14, 0);
-
-            _title.Foreground = white; _title.FontFamily = Theme.UiFont;
-            _title.FontSize = 15; _title.FontWeight = FontWeights.SemiBold;
+            _title.Foreground = white; _title.FontFamily = Theme.UiFont; _title.FontSize = 15; _title.FontWeight = FontWeights.SemiBold;
             _title.TextTrimming = TextTrimming.CharacterEllipsis;
-            _artist.Foreground = dim; _artist.FontFamily = Theme.UiFont;
-            _artist.FontSize = 12.5; _artist.Margin = new Thickness(0, 2, 0, 0);
-            _artist.TextTrimming = TextTrimming.CharacterEllipsis;
-            var meta = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+            _artist.Foreground = dim; _artist.FontFamily = Theme.UiFont; _artist.FontSize = 12.5;
+            _artist.Margin = new Thickness(0, 2, 0, 0); _artist.TextTrimming = TextTrimming.CharacterEllipsis;
+            var meta = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             meta.Children.Add(_title); meta.Children.Add(_artist);
             Grid.SetColumn(meta, 1);
-
-            var eqF = MakeBars(_barsF, 22);
+            var eqF = MakeBars(_barsF, 20);
             eqF.VerticalAlignment = VerticalAlignment.Center;
-            eqF.Margin = new Thickness(0, 0, 18, 0);
             Grid.SetColumn(eqF, 2);
+            top.Children.Add(_artF); top.Children.Add(meta); top.Children.Add(eqF);
+            col.Children.Add(top);
 
-            var ctl = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            ctl.Children.Add(Btn(IcoPrev, 20, MediaService.Prev));
-            _playIcon.Fill = Theme.Solid(Color.FromRgb(0x10, 0x12, 0x1C));
-            _playIcon.Stretch = Stretch.Uniform; _playIcon.Width = 16; _playIcon.Height = 16;
-            _playBtn.Child = _playIcon;
-            _playBtn.Margin = new Thickness(8, 0, 8, 0);
-            _playBtn.Cursor = Cursors.Hand;
-            _playBtn.MouseLeftButtonUp += (s, e) => MediaService.Toggle();
-            ctl.Children.Add(_playBtn);
-            ctl.Children.Add(Btn(IcoNext, 20, MediaService.Next));
-            Grid.SetColumn(ctl, 3);
-
-            row.Children.Add(_artF); row.Children.Add(meta); row.Children.Add(eqF); row.Children.Add(ctl);
-            _fullView.Children.Add(row);
-
-            _track.VerticalAlignment = VerticalAlignment.Bottom;
-            _track.Margin = new Thickness(68, 0, 4, -4);
+            var prog = new Grid { Margin = new Thickness(0, 10, 0, 0) };
+            prog.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            prog.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            prog.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            foreach (var t in new[] { _tLeft, _tRight })
+            {
+                t.Foreground = dim; t.FontFamily = Theme.UiFont; t.FontSize = 11; t.VerticalAlignment = VerticalAlignment.Center;
+            }
+            _tLeft.Margin = new Thickness(0, 0, 9, 0); _tRight.Margin = new Thickness(9, 0, 0, 0);
+            _track.VerticalAlignment = VerticalAlignment.Center;
             _track.Child = _fill;
-            _fullView.Children.Add(_track);
+            Grid.SetColumn(_track, 1); Grid.SetColumn(_tRight, 2);
+            prog.Children.Add(_tLeft); prog.Children.Add(_track); prog.Children.Add(_tRight);
+            Grid.SetRow(prog, 1);
+            col.Children.Add(prog);
 
-            Content = _shell;
+            var ctl = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            ctl.Children.Add(Btn(IcoPrev, 20, MediaService.Prev, null));
+            ctl.Children.Add(Btn(null, 26, MediaService.Toggle, _playIcon));
+            ctl.Children.Add(Btn(IcoNext, 20, MediaService.Next, null));
+            Grid.SetRow(ctl, 2);
+            col.Children.Add(ctl);
+
+            _fullView.Children.Add(col);
         }
 
-        Border Btn(string geo, double size, Action click)
+        Border Btn(string geo, double size, Action click, Path reuse)
         {
-            var p = new Path
-            {
-                Data = Geometry.Parse(geo), Fill = Brushes.White, Stretch = Stretch.Uniform,
-                Width = size, Height = size, Opacity = 0.9, IsHitTestVisible = false
-            };
-            var b = new Border { Background = Brushes.Transparent, Padding = new Thickness(6), Child = p, Cursor = Cursors.Hand };
+            var p = reuse ?? new Path();
+            if (geo != null) p.Data = Geometry.Parse(geo);
+            p.Fill = Brushes.White; p.Stretch = Stretch.Uniform; p.Width = size; p.Height = size; p.IsHitTestVisible = false;
+            var b = new Border { Background = Brushes.Transparent, Padding = new Thickness(14, 4, 14, 4), Child = p, Cursor = Cursors.Hand };
             b.MouseLeftButtonUp += (s, e) => click();
-            b.MouseEnter += (s, e) => p.Opacity = 1;
-            b.MouseLeave += (s, e) => p.Opacity = 0.9;
+            b.MouseLeftButtonDown += (s, e) => p.Opacity = 0.6;
+            b.MouseLeave += (s, e) => p.Opacity = 1;
+            b.MouseLeftButtonUp += (s, e) => p.Opacity = 1;
             return b;
         }
 
@@ -233,8 +243,8 @@ namespace WinWidgets
             {
                 bars[i] = new Border
                 {
-                    Width = 3.2, Height = h, CornerRadius = new CornerRadius(1.6),
-                    Margin = new Thickness(i == 0 ? 0 : 3, 0, 0, 0),
+                    Width = 3, Height = h, CornerRadius = new CornerRadius(1.5),
+                    Margin = new Thickness(i == 0 ? 0 : 2.5, 0, 0, 0),
                     VerticalAlignment = VerticalAlignment.Bottom,
                     RenderTransformOrigin = new Point(0.5, 1),
                     RenderTransform = new ScaleTransform(1, 0.25),
@@ -266,28 +276,14 @@ namespace WinWidgets
             _artist.Text = i.Artist;
             _artist.Visibility = string.IsNullOrEmpty(i.Artist) ? Visibility.Collapsed : Visibility.Visible;
 
-            Brush art;
-            if (i.Thumb != null) art = new ImageBrush(i.Thumb) { Stretch = Stretch.UniformToFill };
-            else
-            {
-                var g = new LinearGradientBrush(Color.FromRgb(0xFF, 0x7A, 0xA8), Color.FromRgb(0x7A, 0x5C, 0xFF), 45);
-                art = g;
-            }
+            Brush art = i.Thumb != null
+                ? (Brush)new ImageBrush(i.Thumb) { Stretch = Stretch.UniformToFill }
+                : new LinearGradientBrush(Color.FromRgb(0x55, 0x58, 0x6B), Color.FromRgb(0x2B, 0x2D, 0x3A), 45);
             _artC.Background = art; _artF.Background = art;
 
-            var accent = i.Accent;
-            var bar = Theme.Solid(accent);
+            var bar = Theme.Solid(i.Accent);
             foreach (var b in _barsC) b.Background = bar;
             foreach (var b in _barsF) b.Background = bar;
-            _fill.Background = bar;
-
-            var glow = new RadialGradientBrush
-            {
-                Center = new Point(0.1, 0.3), GradientOrigin = new Point(0.1, 0.3), RadiusX = 0.55, RadiusY = 1.0
-            };
-            glow.GradientStops.Add(new GradientStop(Theme.A(accent, 0.38), 0));
-            glow.GradientStops.Add(new GradientStop(Theme.A(accent, 0), 1));
-            _glow.Background = glow;
 
             _playIcon.Data = Geometry.Parse(i.Playing ? IcoPause : IcoPlay);
             SetBars(i.HasSession && i.Playing);
@@ -313,40 +309,38 @@ namespace WinWidgets
             switch (m)
             {
                 case Mode.Expanded: w = c.Width; h = c.Height; break;
-                case Mode.Compact: w = 250; h = 40; break;
-                default: w = 168; h = 34; break;
-            }
-            double shellW = w + 2 * Flare;
-
-            if (instant || !IsLoaded)
-            {
-                _shell.BeginAnimation(WidthProperty, null); _shell.BeginAnimation(HeightProperty, null);
-                _shell.Width = shellW; _shell.Height = h;
-            }
-            else if (m != _mode)
-            {
-                IEasingFunction ease = m == Mode.Expanded
-                    ? (IEasingFunction)new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.35 }
-                    : new CubicEase { EasingMode = EasingMode.EaseOut };
-                var dur = TimeSpan.FromMilliseconds(m == Mode.Expanded ? 420 : 280);
-                _shell.BeginAnimation(WidthProperty, new DoubleAnimation(shellW, dur) { EasingFunction = ease });
-                _shell.BeginAnimation(HeightProperty, new DoubleAnimation(h, dur) { EasingFunction = ease });
+                case Mode.Compact: w = 250; h = 34; break;
+                default: w = c.IdleClock ? 190 : 168; h = 32; break;
             }
 
-            Fade(_idleView, m == Mode.Idle);
-            Fade(_compactView, m == Mode.Compact);
-            Fade(_fullView, m == Mode.Expanded);
+            bool expanding = m == Mode.Expanded;
+            _w.Stiffness = _h.Stiffness = expanding ? 260 : 380;
+            _w.Damping = _h.Damping = expanding ? 17 : 29;     // раскрытие — с лёгким «перелётом», схлопывание — без
+            _w.Target = w; _h.Target = h;
+
+            if (instant || !_modeSet)
+            {
+                _w.Value = w; _h.Value = h; _w.Velocity = _h.Velocity = 0;
+                Layout();
+            }
+            else _springs.Kick();
+            _modeSet = true;
+
+            Fade(_idleView, m == Mode.Idle, 0);
+            Fade(_compactView, m == Mode.Compact, 0);
+            Fade(_fullView, m == Mode.Expanded, expanding ? 90 : 0);
 
             if (m == Mode.Expanded) { UpdateProgress(); _progTimer.Start(); }
             else _progTimer.Stop();
-
             _mode = m;
         }
 
-        static void Fade(UIElement e, bool on)
+        static void Fade(UIElement e, bool on, int delayMs)
         {
             e.IsHitTestVisible = on;
-            e.BeginAnimation(OpacityProperty, new DoubleAnimation(on ? 1 : 0, TimeSpan.FromMilliseconds(on ? 220 : 90)));
+            var a = new DoubleAnimation(on ? 1 : 0, TimeSpan.FromMilliseconds(on ? 240 : 100));
+            if (on) a.BeginTime = TimeSpan.FromMilliseconds(delayMs);
+            e.BeginAnimation(OpacityProperty, a);
         }
 
         void SetBars(bool run)
@@ -376,18 +370,23 @@ namespace WinWidgets
         }
 
         // ---------- часы / прогресс ----------
-        void UpdateClock()
+        void UpdateClock() { _idleText.Text = DateTime.Now.ToString("HH:mm"); }
+
+        static string Fmt(double s)
         {
-            _idleText.Text = DateTime.Now.ToString("HH:mm");
+            if (s < 0 || double.IsNaN(s)) s = 0;
+            int t = (int)s;
+            return (t / 60) + ":" + (t % 60).ToString("00");
         }
 
         void UpdateProgress()
         {
             var i = MediaService.Info;
             double tw = _track.ActualWidth;
-            if (tw <= 0) return;
             double f = i.Duration > 0 ? i.Position / i.Duration : 0;
-            _fill.Width = Math.Max(0, Math.Min(1, f)) * tw;
+            if (tw > 0) _fill.Width = Math.Max(0, Math.Min(1, f)) * tw;
+            _tLeft.Text = Fmt(i.Position);
+            _tRight.Text = i.Duration > 0 ? "-" + Fmt(i.Duration - i.Position) : "";
         }
     }
 }

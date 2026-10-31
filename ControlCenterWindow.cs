@@ -10,25 +10,41 @@ using Windows.Devices.Radios;
 
 namespace WinWidgets
 {
-    /// <summary>Ползунок в стиле Control Center: заливка со скруглённым краем.</summary>
+    /// <summary>Ползунок как в Control Center macOS: светлый трек, иконка внутри, круглый бегунок.</summary>
     public class BarSlider : Border
     {
-        readonly Border _fill = new Border
+        readonly Border _fill = new Border { HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(14), Background = Brushes.White };
+        readonly Border _thumb = new Border
         {
-            HorizontalAlignment = HorizontalAlignment.Left,
-            CornerRadius = new CornerRadius(12),
-            Background = Brushes.White,
+            Width = 28, Height = 28, CornerRadius = new CornerRadius(14), Background = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+            BorderBrush = new SolidColorBrush(Color.FromArgb(40, 0, 0, 0)), BorderThickness = new Thickness(1),
         };
         double _v;
         public event Action<double> Changed;
 
-        public BarSlider()
+        public BarSlider(string icon)
         {
-            Height = 24;
-            CornerRadius = new CornerRadius(12);
-            Background = Theme.Solid(Color.FromArgb(36, 255, 255, 255));
-            Child = _fill;
+            Height = 28;
+            CornerRadius = new CornerRadius(14);
+            Background = Ui.TrackBrush;
             Cursor = Cursors.Hand;
+            var g = new Grid();
+            g.Children.Add(_fill);
+            if (icon != null)
+            {
+                var ic = new System.Windows.Shapes.Path
+                {
+                    Data = Geometry.Parse(icon), Stroke = Theme.Solid(Theme.A(Ui.Fg, 0.45)), StrokeThickness = 1.6,
+                    StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round, StrokeLineJoin = PenLineJoin.Round,
+                    Stretch = Stretch.Uniform, Width = 15, Height = 15, IsHitTestVisible = false,
+                    HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(7, 0, 0, 0),
+                };
+                g.Children.Add(ic);
+            }
+            g.Children.Add(_thumb);
+            Child = g;
             SizeChanged += (s, e) => Relayout();
         }
 
@@ -40,13 +56,15 @@ namespace WinWidgets
 
         void Relayout()
         {
-            _fill.Width = 24 + _v * Math.Max(0, ActualWidth - 24);
+            double room = Math.Max(0, ActualWidth - 28);
+            _thumb.Margin = new Thickness(_v * room, 0, 0, 0);
+            _fill.Width = 28 + _v * room;
         }
 
         void SetFrom(MouseEventArgs e)
         {
             double x = e.GetPosition(this).X;
-            _v = Math.Max(0, Math.Min(1, (x - 12) / Math.Max(1, ActualWidth - 24)));
+            _v = Math.Max(0, Math.Min(1, (x - 14) / Math.Max(1, ActualWidth - 28)));
             Relayout();
             Changed?.Invoke(_v);
         }
@@ -77,13 +95,15 @@ namespace WinWidgets
         const string IcoProj = "M2,5 L16,5 L16,15 L2,15 Z M8,9 L22,9 L22,19 L8,19 Z";
         const string IcoShot = "M4,8 L4,4 L8,4 M16,4 L20,4 L20,8 M20,16 L20,20 L16,20 M8,20 L4,20 L4,16";
         const string IcoGear = "M15.5,12 A3.5,3.5 0 1 1 8.5,12 A3.5,3.5 0 1 1 15.5,12 Z M12,2 L12,5 M12,19 L12,22 M2,12 L5,12 M19,12 L22,12 M4.9,4.9 L7,7 M17,17 L19.1,19.1 M4.9,19.1 L7,17 M17,7 L19.1,4.9";
+        const string IcoSun = "M15.5,12 A3.5,3.5 0 1 1 8.5,12 A3.5,3.5 0 1 1 15.5,12 Z M12,2.5 L12,5 M12,19 L12,21.5 M2.5,12 L5,12 M19,12 L21.5,12 M5.3,5.3 L7,7 M17,17 L18.7,18.7 M5.3,18.7 L7,17 M17,7 L18.7,5.3";
+        const string IcoPhones = "M4,15 L4,12 A8,8 0 0 1 20,12 L20,15 M4,14 L7,14 L7,19 L4,19 Z M20,14 L17,14 L17,19 L20,19 Z";
         const string IcoSpeaker = "M4,9 L8,9 L13,5 L13,19 L8,15 L4,15 Z M16,9 A4,4 0 0 1 16,15";
         const string IcoPrev = "M6,5 L8,5 L8,19 L6,19 Z M20,5 L20,19 L9,12 Z";
         const string IcoNext = "M16,5 L18,5 L18,19 L16,19 Z M4,5 L4,19 L15,12 Z";
         const string IcoPlay = "M7,4 L20,12 L7,20 Z";
         const string IcoPause = "M6,4 L10,4 L10,20 L6,20 Z M14,4 L18,4 L18,20 L14,20 Z";
 
-        readonly GlassPanel _glass = new GlassPanel(26);
+        readonly GlassPanel _glass = new GlassPanel(22);
         readonly StackPanel _col = new StackPanel();
         readonly TranslateTransform _slide = new TranslateTransform();
 
@@ -151,7 +171,7 @@ namespace WinWidgets
             return new Path
             {
                 Data = Geometry.Parse(data),
-                Stroke = stroke ?? Brushes.White,
+                Stroke = stroke ?? Ui.FgBrush,
                 StrokeThickness = 1.8,
                 StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
                 StrokeLineJoin = PenLineJoin.Round,
@@ -165,7 +185,7 @@ namespace WinWidgets
             return new Border
             {
                 CornerRadius = new CornerRadius(radius),
-                Background = Theme.Solid(Color.FromArgb(26, 255, 255, 255)),
+                Background = Ui.CardBrush,
                 Child = child,
             };
         }
@@ -175,7 +195,7 @@ namespace WinWidgets
             return new TextBlock
             {
                 Text = s, FontSize = size, FontWeight = w,
-                Foreground = Theme.Solid(Color.FromArgb((byte)(alpha * 255), 255, 255, 255)),
+                Foreground = Theme.Solid(Theme.A(Ui.Fg, alpha)),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
         }
@@ -185,14 +205,16 @@ namespace WinWidgets
             return new Border
             {
                 Width = d, Height = d, CornerRadius = new CornerRadius(d / 2),
-                Background = Theme.Solid(Color.FromArgb(40, 255, 255, 255)),
+                Background = Ui.CircleOffBrush,
                 Child = Ico(ico, 19),
             };
         }
 
         static void SetOn(Border circle, bool on)
         {
-            circle.Background = on ? Theme.Solid(Theme.Accent) : Theme.Solid(Color.FromArgb(40, 255, 255, 255));
+            circle.Background = on ? Theme.Solid(Theme.Accent) : Ui.CircleOffBrush;
+            var p = circle.Child as Path;
+            if (p != null) p.Stroke = on ? Brushes.White : Ui.FgBrush;
         }
 
         Grid ToggleLine(string ico, string title, out Border circle, out TextBlock sub, string subText, Action click)
@@ -230,7 +252,7 @@ namespace WinWidgets
             var sp = new StackPanel { Margin = new Thickness(14, 11, 14, 14) };
             lbl = Text(label, 13, FontWeights.SemiBold);
             lbl.Margin = new Thickness(0, 0, 0, 10);
-            slider = new BarSlider();
+            slider = new BarSlider(label == "Дисплей" ? IcoSun : IcoPhones);
             sp.Children.Add(lbl); sp.Children.Add(slider);
             return Card(sp);
         }
@@ -324,7 +346,7 @@ namespace WinWidgets
             Grid.SetColumn(meta, 1);
             var ctl = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             ctl.Children.Add(MediaBtn(IcoPrev, MediaService.Prev));
-            _ppIcon = new Path { Fill = Brushes.White, Stretch = Stretch.Uniform, Width = 17, Height = 17, IsHitTestVisible = false };
+            _ppIcon = new Path { Fill = Ui.FgBrush, Stretch = Stretch.Uniform, Width = 17, Height = 17, IsHitTestVisible = false };
             var pp = new Border { Background = Brushes.Transparent, Padding = new Thickness(8), Child = _ppIcon, Cursor = Cursors.Hand };
             pp.MouseLeftButtonUp += (s, e) => MediaService.Toggle();
             ctl.Children.Add(pp);
@@ -352,7 +374,7 @@ namespace WinWidgets
 
         Border MediaBtn(string ico, Action click)
         {
-            var p = new Path { Data = Geometry.Parse(ico), Fill = Brushes.White, Stretch = Stretch.Uniform, Width = 17, Height = 17, IsHitTestVisible = false };
+            var p = new Path { Data = Geometry.Parse(ico), Fill = Ui.FgBrush, Stretch = Stretch.Uniform, Width = 17, Height = 17, IsHitTestVisible = false };
             var b = new Border { Background = Brushes.Transparent, Padding = new Thickness(8), Child = p, Cursor = Cursors.Hand };
             b.MouseLeftButtonUp += (s, e) => click();
             return b;

@@ -48,12 +48,26 @@ namespace WinWidgets
             Check("Дата под часами", c.ShowDate, v => { c.ShowDate = v; Commit(); });
 
             // шрифт
-            var fonts = Fonts.SystemFontFamilies.Select(f => f.Source).OrderBy(s => s).ToList();
+            var fonts = new List<string>();
+            try
+            {
+                string[] skip = { "wingdings", "webdings", "symbol", "marlett", "mdl2", "fluent icons", "holo", "emoji", "specialty", "bookshelf", "dingbats" };
+                foreach (var f in Fonts.SystemFontFamilies)
+                {
+                    string n = f.Source;
+                    string low = n.ToLowerInvariant();
+                    bool bad = false;
+                    foreach (var k in skip) if (low.Contains(k)) { bad = true; break; }
+                    if (!bad) fonts.Add(n);
+                }
+                fonts.Sort(StringComparer.CurrentCultureIgnoreCase);
+            }
+            catch { }
             var cb = new ComboBox { ItemsSource = fonts, Margin = new Thickness(0, 6, 0, 6) };
             cb.SelectedItem = fonts.Contains(c.Font) ? c.Font : null;
             cb.SelectionChanged += (s, e) =>
             {
-                if (cb.SelectedItem is string f) { c.Font = f; Commit(); }
+                if (cb.SelectedItem is string f) { c.Font = ConfigStore.FontOrDefault(f); Commit(); }
             };
             Row("Шрифт", cb);
 
@@ -83,11 +97,17 @@ namespace WinWidgets
             Slider("Прозрачность", 0.1, 1, c.Opacity, v => ((int)(v * 100)) + "%", v => { c.Opacity = Math.Round(v, 2); Commit(); });
             Slider("Эффект стекла", 0, 1, c.Glass, v => ((int)(v * 100)) + "%", v => { c.Glass = Math.Round(v, 2); Commit(); });
 
-            Header("Стекло (остров, панель, док)");
+            Header("Стекло (панель управления, док)");
+            Check("Светлое стекло, как в macOS (применится после перезапуска)", g.Light, v => { g.Light = v; Commit(); });
             Check("Размытые обои под стеклом", g.WallpaperBlur, v => { g.WallpaperBlur = v; Commit(); });
-            Slider("Тонировка", 0, 0.9, g.TintOpacity, v => ((int)(v * 100)) + "%", v => { g.TintOpacity = Math.Round(v, 2); Commit(); });
-            Slider("Блик", 0, 0.5, g.Sheen, v => ((int)(v * 100)) + "%", v => { g.Sheen = Math.Round(v, 2); Commit(); });
-            Slider("Световой ободок", 0, 1, g.Rim, v => ((int)(v * 100)) + "%", v => { g.Rim = Math.Round(v, 2); Commit(); });
+            Slider("Плотность", 0, 0.8, g.Opacity, v => ((int)(v * 100)) + "%", v => { g.Opacity = Math.Round(v, 2); Commit(); });
+
+            Header("Виджеты");
+            var ac = ConfigStore.Current.AnalogClock; var cal = ConfigStore.Current.Calendar;
+            Check("Аналоговые часы", ac.Enabled, v => { ac.Enabled = v; Commit(); });
+            Check("Календарь", cal.Enabled, v => { cal.Enabled = v; Commit(); });
+            Check("Иконка корзины в доке", ConfigStore.Current.Dock.ShowTrash, v => { ConfigStore.Current.Dock.ShowTrash = v; Commit(); });
+            Check("Время в пустой челке", ConfigStore.Current.Island.IdleClock, v => { ConfigStore.Current.Island.IdleClock = v; Commit(); });
 
             var reload = new Button { Content = "Обновить обои", Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 12, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
             reload.Click += (s, e) => { Wallpaper.Reload(); ConfigStore.NotifyChanged(); };

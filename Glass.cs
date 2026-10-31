@@ -74,7 +74,17 @@ namespace WinWidgets
             BoxBlur(px, cw, ch, 2);
             BoxBlur(px, cw, ch, 2);
 
-            for (int i = 3; i < px.Length; i += 4) px[i] = 255;
+            // насыщенность + лёгкий подъём яркости: так выглядит «vibrancy» macOS
+            for (int i = 0; i < px.Length; i += 4)
+            {
+                double b = px[i], g = px[i + 1], r = px[i + 2];
+                double l = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = l + (r - l) * 1.45 + 6; g = l + (g - l) * 1.45 + 6; b = l + (b - l) * 1.45 + 6;
+                px[i] = (byte)Math.Max(0, Math.Min(255, b));
+                px[i + 1] = (byte)Math.Max(0, Math.Min(255, g));
+                px[i + 2] = (byte)Math.Max(0, Math.Min(255, r));
+                px[i + 3] = 255;
+            }
 
             // DPI подбираем так, чтобы размер картинки в DIP совпадал с размером экрана
             double dpiX = 96.0 * cw / sw, dpiY = 96.0 * ch / sh;
@@ -135,51 +145,118 @@ namespace WinWidgets
 
         public static readonly FontFamily UiFont = new FontFamily("Segoe UI Variable Text, Segoe UI");
 
-        /// <summary>Акцентный цвет системы (берём у Windows, чтобы панель выглядела родной).</summary>
+        /// <summary>Синий акцент переключателей (как в macOS), настраивается в конфиге.</summary>
         public static Color Accent
         {
-            get
+            get { return Parse(ConfigStore.Current.Glass.Accent, Color.FromRgb(0x0A, 0x84, 0xFF)); }
+        }
+    }
+
+    /// <summary>Цвета интерфейса в зависимости от светлой/тёмной темы стекла.</summary>
+    public static class Ui
+    {
+        public static bool Light { get { return ConfigStore.Current.Glass.Light; } }
+        public static Color Fg { get { return Light ? Color.FromRgb(0x1D, 0x1D, 0x1F) : Colors.White; } }
+        public static Brush FgBrush { get { return Theme.Solid(Fg); } }
+        public static Brush DimBrush { get { return Theme.Solid(Theme.A(Fg, 0.58)); } }
+        public static Brush CardBrush { get { return Theme.Solid(Light ? Color.FromArgb(120, 255, 255, 255) : Color.FromArgb(28, 255, 255, 255)); } }
+        public static Brush CircleOffBrush { get { return Theme.Solid(Light ? Color.FromArgb(34, 0, 0, 0) : Color.FromArgb(44, 255, 255, 255)); } }
+        public static Brush TrackBrush { get { return Theme.Solid(Light ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(40, 255, 255, 255)); } }
+    }
+
+    /// <summary>Пружина: даёт то самое «упругое» движение macOS.</summary>
+    public class Spring
+    {
+        public double Value, Target, Velocity;
+        public double Stiffness, Damping;
+
+        public Spring(double v, double stiffness = 320, double damping = 24)
+        {
+            Value = Target = v; Stiffness = stiffness; Damping = damping;
+        }
+
+        /// <summary>true — ещё движется.</summary>
+        public bool Step(double dt)
+        {
+            double a = -Stiffness * (Value - Target) - Damping * Velocity;
+            Velocity += a * dt;
+            Value += Velocity * dt;
+            if (Math.Abs(Value - Target) < 0.04 && Math.Abs(Velocity) < 0.6)
             {
-                try
-                {
-                    var c = new Windows.UI.ViewManagement.UISettings()
-                        .GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent);
-                    return Color.FromRgb(c.R, c.G, c.B);
-                }
-                catch { return Color.FromRgb(0x3B, 0x8B, 0xFF); }
+                Value = Target; Velocity = 0; return false;
+            }
+            return true;
+        }
+    }
+
+    /// <summary>Крутит пружины только пока они движутся — в простое ноль нагрузки.</summary>
+    public class SpringGroup
+    {
+        readonly System.Collections.Generic.List<Spring> _springs = new System.Collections.Generic.List<Spring>();
+        readonly Action _onFrame;
+        bool _on;
+        long _last;
+
+        public SpringGroup(Action onFrame) { _onFrame = onFrame; }
+
+        public Spring Add(double v, double stiffness = 320, double damping = 24)
+        {
+            var s = new Spring(v, stiffness, damping);
+            _springs.Add(s);
+            return s;
+        }
+
+        public void Kick()
+        {
+            if (_on) return;
+            _on = true;
+            _last = System.Diagnostics.Stopwatch.GetTimestamp();
+            CompositionTarget.Rendering += Tick;
+        }
+
+        void Tick(object sender, EventArgs e)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            double dt = (now - _last) / (double)System.Diagnostics.Stopwatch.Frequency;
+            _last = now;
+            if (dt > 1.0 / 30) dt = 1.0 / 30;
+            if (dt <= 0) return;
+
+            bool any = false;
+            foreach (var s in _springs) if (s.Step(dt)) any = true;
+            _onFrame();
+            if (!any)
+            {
+                CompositionTarget.Rendering -= Tick;
+                _on = false;
             }
         }
     }
 
     /// <summary>
-    /// «Жидкое стекло» без шейдеров: размытые обои → тонировка → блик сверху →
-    /// световой ободок с разной яркостью по диагонали → тонкая внутренняя кромка.
-    /// Контент кладётся в Body.
+    /// Матовое стекло как в macOS: размытые обои → светлая (или тёмная) подложка → мягкий блик →
+    /// тонкая тёмная кромка снаружи и светлая внутри. Контент кладётся в Body.
     /// </summary>
     public class GlassPanel : Grid
     {
         public Grid Body { get; }
 
-        readonly double _radius;
         readonly ImageBrush _img;
-        readonly Border _blur, _tint, _sheen, _glint, _rim, _inner;
+        readonly Border _blur, _wash, _sheen, _edgeOut, _edgeIn;
 
         public GlassPanel(double radius)
         {
-            _radius = radius;
             var cr = new CornerRadius(radius);
-
             _img = new ImageBrush { ViewboxUnits = BrushMappingMode.Absolute, Stretch = Stretch.Fill };
             _blur = Layer(cr);
-            _tint = Layer(cr);
+            _wash = Layer(cr);
             _sheen = Layer(cr);
-            _glint = Layer(cr);
-            _rim = Layer(cr); _rim.BorderThickness = new Thickness(1.2);
-            _inner = Layer(new CornerRadius(Math.Max(0, radius - 1.2)));
-            _inner.Margin = new Thickness(1.2); _inner.BorderThickness = new Thickness(1);
+            _edgeOut = Layer(cr); _edgeOut.BorderThickness = new Thickness(1);
+            _edgeIn = Layer(new CornerRadius(Math.Max(0, radius - 1)));
+            _edgeIn.Margin = new Thickness(1); _edgeIn.BorderThickness = new Thickness(1);
 
-            Children.Add(_blur); Children.Add(_tint); Children.Add(_sheen);
-            Children.Add(_glint); Children.Add(_inner); Children.Add(_rim);
+            Children.Add(_blur); Children.Add(_wash); Children.Add(_sheen);
+            Children.Add(_edgeIn); Children.Add(_edgeOut);
             Body = new Grid();
             Children.Add(Body);
 
@@ -191,52 +268,30 @@ namespace WinWidgets
 
         static Border Layer(CornerRadius cr)
         {
-            return new Border { CornerRadius = cr, IsHitTestVisible = false, SnapsToDevicePixels = false };
+            return new Border { CornerRadius = cr, IsHitTestVisible = false };
         }
 
         public void Apply()
         {
             var g = ConfigStore.Current.Glass;
-            var tint = Theme.Parse(g.Tint, Color.FromRgb(0x14, 0x16, 0x1F));
-            var white = Colors.White;
+            bool light = g.Light;
+            bool haveImg = g.WallpaperBlur && Wallpaper.Blurred != null;
 
-            if (g.WallpaperBlur && Wallpaper.Blurred != null)
-            {
-                _img.ImageSource = Wallpaper.Blurred;
-                _blur.Background = _img;
-            }
+            if (haveImg) { _img.ImageSource = Wallpaper.Blurred; _blur.Background = _img; }
             else _blur.Background = null;
 
-            _tint.Background = Theme.Solid(Theme.A(tint, g.TintOpacity));
+            Color wash = light ? Color.FromRgb(0xF4, 0xF4, 0xF8) : Color.FromRgb(0x1C, 0x1C, 0x24);
+            double a = haveImg ? Math.Min(0.92, g.Opacity + (light ? 0.14 : 0.12)) : (light ? 0.86 : 0.88);
+            _wash.Background = Theme.Solid(Theme.A(wash, a));
 
             var sheen = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
-            sheen.GradientStops.Add(new GradientStop(Theme.A(white, g.Sheen), 0));
-            sheen.GradientStops.Add(new GradientStop(Theme.A(white, g.Sheen * 0.22), 0.35));
-            sheen.GradientStops.Add(new GradientStop(Theme.A(white, 0), 0.65));
-            sheen.GradientStops.Add(new GradientStop(Theme.A(white, g.Sheen * 0.30), 1));
+            sheen.GradientStops.Add(new GradientStop(Theme.A(Colors.White, light ? 0.30 : 0.10), 0));
+            sheen.GradientStops.Add(new GradientStop(Theme.A(Colors.White, 0), 0.55));
+            sheen.Freeze();
             _sheen.Background = sheen;
 
-            var glint = new RadialGradientBrush
-            {
-                Center = new Point(0.12, 0), GradientOrigin = new Point(0.12, 0),
-                RadiusX = 0.55, RadiusY = 0.9
-            };
-            glint.GradientStops.Add(new GradientStop(Theme.A(white, g.Sheen * 0.9), 0));
-            glint.GradientStops.Add(new GradientStop(Theme.A(white, 0), 1));
-            _glint.Background = glint;
-
-            var rim = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(1, 1) };
-            rim.GradientStops.Add(new GradientStop(Theme.A(white, 0.95 * g.Rim), 0));
-            rim.GradientStops.Add(new GradientStop(Theme.A(white, 0.14 * g.Rim), 0.32));
-            rim.GradientStops.Add(new GradientStop(Theme.A(white, 0.06 * g.Rim), 0.68));
-            rim.GradientStops.Add(new GradientStop(Theme.A(white, 0.60 * g.Rim), 1));
-            _rim.BorderBrush = rim;
-
-            var inner = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
-            inner.GradientStops.Add(new GradientStop(Theme.A(white, 0.16 * g.Rim), 0));
-            inner.GradientStops.Add(new GradientStop(Theme.A(white, 0.02), 0.5));
-            inner.GradientStops.Add(new GradientStop(Theme.A(white, 0.08 * g.Rim), 1));
-            _inner.BorderBrush = inner;
+            _edgeOut.BorderBrush = Theme.Solid(Theme.A(Colors.Black, light ? 0.18 : 0.55));
+            _edgeIn.BorderBrush = Theme.Solid(Theme.A(Colors.White, light ? 0.55 : 0.20));
         }
 
         void UpdateView()
@@ -251,5 +306,8 @@ namespace WinWidgets
             }
             catch { }
         }
+
+        /// <summary>Вызывать, если окно с панелью переместили.</summary>
+        public void Reposition() { UpdateView(); }
     }
 }
